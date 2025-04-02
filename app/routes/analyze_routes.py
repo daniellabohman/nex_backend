@@ -1,47 +1,38 @@
 from flask import Blueprint, request, jsonify
-import os
-import shutil
+from app.models import db, Analyze, Scan, User
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from your_bert_model import analyze_privacy_policy  # Assume this is your AI model function
 
-# Create a blueprint for analyzing documents
 analyze_bp = Blueprint('analyze', __name__, url_prefix='/api')
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Perform AI-driven analysis of a scan's privacy policy
+@analyze_bp.route('/analyze', methods=['POST'])
+@jwt_required()
+def analyze():
+    data = request.get_json()
+    scan_id = data.get('scan_id')
 
-@analyze_bp.route('/upload', methods=['POST'])
-def analyze_document():
-    try:
-        # Check if file part is in the request
-        if 'file' not in request.files:
-            return jsonify({"message": "No file part"}), 400
-        
-        file = request.files['file']
-        
-        # If no file is selected
-        if file.filename == '':
-            return jsonify({"message": "No selected file"}), 400
-        
-        # Save the file to the upload directory
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        file.save(file_path)
+    if not scan_id:
+        return jsonify({'message': 'Scan ID is required'}), 400
 
-        # TODO: Call your analyze function and fetch results
-        analysis_result = dummy_analyze(file.filename)
+    # Get the user id from JWT token
+    user_id = get_jwt_identity()
 
-        # Return the analysis result
-        return jsonify({
-            "filename": file.filename,
-            "missing_elements": analysis_result
-        })
-    
-    except Exception as e:
-        return jsonify({"message": f"Error in file handling: {str(e)}"}), 500
+    scan = Scan.query.get(scan_id)
+    if not scan or scan.user_id != user_id:
+        return jsonify({'message': 'Scan not found or not authorized'}), 404
 
-def dummy_analyze(filename: str):
-    """Dummy function to return random GDPR violations"""
-    dummy_issues = [
-        {"problem": "Missing consent section", "risk": "High"},
-        {"problem": "No contact information for DPO", "risk": "Medium"},
-        {"problem": "Data processing agreement not mentioned", "risk": "Low"},
-    ]
-    return dummy_issues[:2]  # Return a couple of random violations
+    # Run the AI analysis on the scan's privacy policy
+    analysis_result = analyze_privacy_policy(scan.privacy_policy_status)
+
+    # Store the analysis results in the database
+    new_analysis = Analyze(
+        scan_id=scan.id,
+        user_id=user_id,
+        ai_feedback=analysis_result.get('feedback'),
+        missing_elements=analysis_result.get('missing_elements')
+    )
+    db.session.add(new_analysis)
+    db.session.commit()
+
+    return jsonify({'message': 'Analysis completed successfully', 'analysis_id': new_analysis.id}), 201
